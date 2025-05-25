@@ -1,0 +1,2 @@
+# Run both collection scraper and deep dive at 11 AM
+0 11 * * * /Users/shahafgoren/yad2/run_yad2_scraper.sh 
