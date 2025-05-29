@@ -17,19 +17,21 @@ from datetime import datetime
 from tqdm import tqdm
 
 class Yad2CollectionsScraper(Yad2BaseScraper):
-    def __init__(self, download_images: bool = False):
+    def __init__(self, download_images: bool = False, headless: bool = True):
         super().__init__(download_images)
-        self.base_url = "https://market.yad2.co.il/collections"
+        self.base_url = "https://www.yad2.co.il/market/collections"
+        self.headless = headless
         
         # Set up Chrome options
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')  # Run in headless mode
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument(f'user-agent={self.headers["User-Agent"]}')
+        self.chrome_options = Options()
+        if headless:
+            self.chrome_options.add_argument('--headless')
+        self.chrome_options.add_argument('--no-sandbox')
+        self.chrome_options.add_argument('--disable-dev-shm-usage')
+        self.chrome_options.add_argument(f'user-agent={self.headers["User-Agent"]}')
         
         # Initialize the Chrome driver
-        self.driver = webdriver.Chrome(options=chrome_options)
+        self.driver = webdriver.Chrome(options=self.chrome_options)
         self.wait = WebDriverWait(self.driver, 10)
         
         # For tracking listings
@@ -101,38 +103,34 @@ class Yad2CollectionsScraper(Yad2BaseScraper):
         Parse a single product card and extract relevant information
         """
         try:
-            # Skip skeleton cards
-            if 'boa-skeleton-card' in card.get('class', []):
+            # Skip if it's a new business listing
+            if card.find('div', class_='item-image_newBusinessTag__zI6xW'):
                 return {}
 
-            # Get product and seller IDs
-            product_id = card.get('data-product-id', '')
-            seller_id = card.find('div', class_='product-image-container').get('data-seller-id', '')
+            # Get product URL and ID from the link
+            link = card.find('a', class_='item-grid_imageContainer__U2drL')
+            product_url = f"https://www.yad2.co.il{link.get('href', '')}" if link else ''
+            product_id = product_url.split('/')[-1] if product_url else ''
 
             # Get image URL
-            img_elem = card.find('img', class_='card__media')
+            img_elem = card.find('img', class_='shopify-image_image__KPxpT')
             image_url = img_elem.get('src', '') if img_elem else ''
 
             # Get price information
-            price_container = card.find('div', class_='price__default')
-            current_price = price_container.find('span', class_='price__current').text.strip() if price_container else ''
-            was_price = price_container.find('span', class_='price__was').text.strip() if price_container and price_container.find('span', class_='price__was') else ''
+            price_elem = card.find('p', class_='item-price_price__HMXoj')
+            current_price = price_elem.text.strip().replace('₪', '') if price_elem else ''
 
             # Get location
-            location_elem = card.find('p', class_='product-location')
+            location_elem = card.find('p', class_='item-location_location__E96ST')
             location = location_elem.text.strip() if location_elem else ''
 
-            # Get product URL from the parent link
-            parent_link = card.find_parent('a')
-            product_url = f"https://market.yad2.co.il{parent_link.get('href', '')}" if parent_link and parent_link.get('href') else ''
-
             # Get title
-            title_elem = card.find_next_sibling('div', class_='card__title')
+            title_elem = card.find('h2', class_='item-title_title__2tG20')
             title = title_elem.text.strip() if title_elem else ''
 
             # Get tags/condition
-            tags_container = card.find('div', class_='boa-product-tags-container')
-            tags = [tag.text.strip() for tag in tags_container.find_all('span', class_='boa-product-tag')] if tags_container else []
+            tags_container = card.find('div', class_='item-tags_tags__GdgQO')
+            tags = [tag.text.strip() for tag in tags_container.find_all('p', class_='tag_tag__Zaq8_')] if tags_container else []
 
             # Download image if enabled
             if self.download_images and image_url:
@@ -143,10 +141,8 @@ class Yad2CollectionsScraper(Yad2BaseScraper):
             
             return {
                 'product_id': product_id,
-                'seller_id': seller_id,
                 'title': title,
                 'current_price': current_price,
-                'was_price': was_price,
                 'location': location,
                 'image_url': image_url,
                 'product_url': product_url,
@@ -162,12 +158,12 @@ class Yad2CollectionsScraper(Yad2BaseScraper):
 
     def wait_for_products(self, timeout: int = 10) -> bool:
         """
-        Wait for products to load and return True if non-skeleton products are found
+        Wait for products to load and return True if products are found
         """
         try:
-            # Wait for the first non-skeleton product to appear
+            # Wait for the feed container to appear
             self.wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.card--product:not(.boa-skeleton-card)"))
+                EC.presence_of_element_located((By.CLASS_NAME, "feed_feedContainer__Abipd"))
             )
             return True
         except TimeoutException:
@@ -177,36 +173,152 @@ class Yad2CollectionsScraper(Yad2BaseScraper):
             logging.error(f"Error waiting for products: {e}")
             return False
 
+    def scroll_to_load_more(self, max_scrolls: int = 3) -> bool:
+        """
+        Scroll to the bottom of the page to load more content via infinite scroll
+        Returns True if new content was loaded, False otherwise
+        """
+        try:
+            # Get initial number of products
+            initial_products = len(self.driver.find_elements(By.CSS_SELECTOR, "article.item-grid_grid__P3tKb"))
+            
+            for scroll_attempt in range(max_scrolls):
+                # Scroll to the bottom of the page
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                
+                # Wait for new content to potentially load
+                time.sleep(2)
+                
+                # Check if new products were loaded
+                current_products = len(self.driver.find_elements(By.CSS_SELECTOR, "article.item-grid_grid__P3tKb"))
+                if current_products == initial_products:
+                    time.sleep(3
+                    )
+                    current_products = len(self.driver.find_elements(By.CSS_SELECTOR, "article.item-grid_grid__P3tKb"))
+                if current_products > initial_products:
+                    logging.info(f"Loaded {current_products - initial_products} more products via scrolling")
+                    return True
+                    
+            return False
+        except Exception as e:
+            logging.error(f"Error during scrolling: {e}")
+            return False
+
+    def detect_captcha(self) -> bool:
+        """
+        Detect if a CAPTCHA is present on the page
+        """
+        try:
+            # Look for the specific CAPTCHA wrapper
+            if self.driver.find_elements(By.CSS_SELECTOR, "div.captcha-wrapper"):
+                return True
+                    
+            return False
+        except Exception as e:
+            logging.error(f"Error detecting CAPTCHA: {e}")
+            return False
+
+    def restart_driver_without_headless(self):
+        """
+        Restart the driver in non-headless mode for CAPTCHA solving
+        """
+        try:
+            logging.info("CAPTCHA detected! Restarting browser in visible mode...")
+            current_url = self.driver.current_url
+            
+            # Close the current driver
+            self.driver.quit()
+            
+            # Restart without headless
+            self.chrome_options = Options()
+            self.chrome_options.add_argument('--no-sandbox')
+            self.chrome_options.add_argument('--disable-dev-shm-usage')
+            self.chrome_options.add_argument(f'user-agent={self.headers["User-Agent"]}')
+            
+            self.driver = webdriver.Chrome(options=self.chrome_options)
+            self.wait = WebDriverWait(self.driver, 10)
+            
+            # Navigate back to the current URL
+            self.driver.get(current_url)
+            self.headless = False
+            
+            logging.info("Browser restarted in visible mode. Please solve the CAPTCHA manually.")
+            logging.info("Waiting for CAPTCHA to be solved...")
+            
+            # Wait for CAPTCHA to be solved (captcha-wrapper to disappear)
+            self.wait_for_captcha_solved()
+            
+        except Exception as e:
+            logging.error(f"Error restarting driver: {e}")
+
+    def wait_for_captcha_solved(self, timeout: int = 300):
+        """
+        Wait for the CAPTCHA to be solved by monitoring when captcha-wrapper disappears
+        """
+        try:
+            # Create a longer wait for CAPTCHA solving (5 minutes max)
+            captcha_wait = WebDriverWait(self.driver, timeout)
+            
+            # Wait for the captcha-wrapper to disappear
+            captcha_wait.until_not(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.captcha-wrapper"))
+            )
+            
+            logging.info("CAPTCHA solved! Continuing with scraping...")
+            
+        except TimeoutException:
+            logging.warning(f"CAPTCHA not solved within {timeout} seconds. You may need to solve it manually.")
+            logging.info("Press Enter to continue anyway...")
+            input("Waiting for manual confirmation...")
+        except Exception as e:
+            logging.error(f"Error waiting for CAPTCHA to be solved: {e}")
+            logging.info("Press Enter to continue...")
+            input("Waiting for manual confirmation...")
+
     def search_collection(self, collection_url: str, page: int = 1, filters: Dict = None) -> List[Dict]:
         """
         Search for products in a specific collection with optional filters
         """
         try:
             # Construct the URL with page parameter and filters
-            params = {'page': page, 'sortBy': 'creation_date'}
+            params = {}
+            if page > 1:
+                params['pageNumber'] = page
+            
             if filters:
-                params.update(filters)
+                if 'min_price' in filters:
+                    params['minPrice'] = filters['min_price']
+                if 'max_price' in filters:
+                    params['maxPrice'] = filters['max_price']
+                if 'productTypes' in filters:
+                    params['productTypes'] = filters['productTypes']
+            
+            # Always sort by newest
+            params['sortOption'] = 'newest'
             
             url = f"{collection_url}?{urlencode(params)}"
             
             # Load the page with Selenium
             self.driver.get(url)
             
+            # Check for CAPTCHA
+            if self.detect_captcha() and self.headless:
+                self.restart_driver_without_headless()
+            
             # Wait for products to load
             if not self.wait_for_products():
                 return [], True
 
+            # If this is page 1, try scrolling to load more content
+            if self.scroll_to_load_more(max_scrolls=2):
+                while self.scroll_to_load_more(max_scrolls=2):
+                    pass
+
             # Get the page source after JavaScript has loaded the content
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             
-            # Find the search results container
-            results_container = soup.find('div', id='searchResults')
-            if not results_container:
-                logging.info(f"No search results container found on page {page}")
-                return [], False
-
-            # Find all product cards (excluding skeletons)
-            product_cards = results_container.find_all('div', class_='card--product')
+            # Find all product cards
+            product_cards = soup.find_all('article', class_='item-grid_grid__P3tKb')
             
             # Parse each product card with progress bar
             listings = []
@@ -225,14 +337,8 @@ class Yad2CollectionsScraper(Yad2BaseScraper):
                         if mask.any():
                             self.df_existing.loc[mask, 'last_seen_date'] = listing['last_seen_date']
                             self.df_existing.loc[mask, 'current_price'] = listing['current_price']
-                            self.df_existing.loc[mask, 'was_price'] = listing['was_price']
                     else:
                         listings.append(listing)
-                time.sleep(0.5)  # Small delay between card processing
-
-            # Update listing status after processing the page
-            # Somethings is wrong here
-            # self.update_listing_status(current_listings)
             
             return listings, False
 
@@ -274,22 +380,22 @@ class Yad2CollectionsScraper(Yad2BaseScraper):
         stop_scraping = False
         
         # Create progress bar for pages
-        with tqdm(desc=f"Scraping {category['name']}", unit="page") as pbar:
-            while not stop_scraping:
-                logging.info(f"Fetching page {page}")
-                listings, stop_scraping = self.search_collection(collection_url, page, applied_filters)
-                if stop_scraping:
-                    break
+        # with tqdm(desc=f"Scraping {category['name']}", unit="page") as pbar:
+            # while not stop_scraping :  # Limit to 5 pages since most content is on page 1 with scrolling
+                # logging.info(f"Fetching page {page}")
+        listings, stop_scraping = self.search_collection(collection_url, page, applied_filters)
+                # if stop_scraping or len(listings) == 0:
+                #     break
                     
-                all_listings.extend(listings)
+        all_listings.extend(listings)
                 
-                # Save checkpoint after each page
-                self.save_to_csv(all_listings, output_file)
-                logging.info(f"Saved checkpoint to {output_file}")
+        # Save checkpoint after each page
+        self.save_to_csv(all_listings, output_file)
+        logging.info(f"Saved checkpoint to {output_file}")
                 
-                page += 1
-                pbar.update(1)
-                time.sleep(1)  # Be nice to the server
+                # page += 1
+                # pbar.update(1)
+                # time.sleep(1)  # Be nice to the server
 
         logging.info(f"Total listings found for {category['name']}: {len(all_listings)}")
         logging.info(f"Final results saved to {output_file}")
@@ -338,7 +444,8 @@ def process_queries(scraper, queries):
         time.sleep(2)  # Be nice between categories
 
 def main():
-    scraper = Yad2CollectionsScraper(download_images=False)
+    # Start in headless mode for speed, but will switch to visible mode if CAPTCHA is detected
+    scraper = Yad2CollectionsScraper(download_images=False, headless=True)
     
     # Example queries with different filters
     queries = [
@@ -347,7 +454,7 @@ def main():
             'filters': {
                 'min_price': '200',
                 'max_price': '2000',
-                'filters': '[["Type","ספה בודדת"]]'
+                'productTypes': 460
             }
         },
         {
@@ -358,7 +465,7 @@ def main():
             }
         },
         {
-            'category_key': 'electronics_watches',
+            'category_key': 'bikes_and_scooters',
             'filters': {
                 'min_price': '200',
                 'max_price': '2000'
@@ -367,7 +474,7 @@ def main():
         {
             'category_key': 'cell_phones',
             'filters': {
-                'min_price': '500',
+                'min_price': '200',
                 'max_price': '2000'
             }
         }

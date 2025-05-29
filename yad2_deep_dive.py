@@ -1,3 +1,5 @@
+import glob
+import re
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -98,11 +100,12 @@ def deep_dive(input_csv, output_csv, limit=None, delay=1.5):
 
 if __name__ == "__main__":
     # Example usage
-    deep_dive(
-        input_csv='yad2_collections_ריהוט_min_price_200_max_price_2000_filters_[["Type","ספה בודדת"]].csv',  # Change as needed
-        output_csv="yad2_sofas_deep_dive.csv",
-        limit=None,  # Set to an integer for testing
-        delay=1.5
-    )
+    for f in glob.glob('yad2_collections_*.csv'):
+        deep_dive(
+            input_csv=f,
+            output_csv=f"yad2_deep_dive_{'_'.join(re.findall(r'[א-ת]+', f))}.csv",
+            limit=None,  # Set to an integer for testing
+            delay=1.5
+        )
 
     

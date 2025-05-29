@@ -1,4 +1,6 @@
-requests==2.31.0
-beautifulsoup4==4.12.2
-pandas==2.1.4
-uuid==1.30 
+requests
+beautifulsoup4
+pandas
+uuid
+selenium
+tqdm
